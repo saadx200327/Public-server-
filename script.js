@@ -1,368 +1,523 @@
 /*
- * ZaLand Habit Tracker
+ * indikator – Interactive trading dashboard proof‑of‑concept
  *
- * This script drives the interactivity of the ZaLand app.  It
- * handles the welcome splash screen, name entry, poem and habit
- * generation, rope dragging to reveal a game, and the simple
- * catch‑the‑habits game itself.
+ * This script drives the core logic for the indikator app. It loads a small
+ * sample dataset (see data/sample_data.json) and uses the TradingView
+ * Lightweight Charts library to render candlestick charts. It also
+ * implements a basic watchlist, stock search overlay, command bar for
+ * simple chart commands, and a market sentiment signal box that
+ * evaluates each ticker using a simplified ruleset. The resulting
+ * application is a minimal demonstration of the features described in
+ * the specification. To hook this up to live data, replace the sample
+ * dataset loading with a call to your preferred market data API.
  */
 
-// Wait for the DOM to be ready
-document.addEventListener('DOMContentLoaded', () => {
-  const welcomeOverlay = document.getElementById('welcome');
-  const main = document.getElementById('main');
-  const nameInput = document.getElementById('nameInput');
-  const startButton = document.getElementById('startButton');
-  const resultSection = document.getElementById('result');
-  const poemContainer = document.getElementById('poem');
-  const tasksList = document.getElementById('tasks');
-  const projectorHandle = document.getElementById('projectorHandle');
-  const projectorScreen = document.getElementById('projectorScreen');
-  const gameCanvas = document.getElementById('gameCanvas');
-  const scoreDisplay = document.getElementById('score');
-  const closeGameBtn = document.getElementById('closeGame');
+(() => {
+  // Global state
+  let allData = {};
+  let watchlist = [];
+  let activeSymbol = null;
+  let chart, candleSeries;
+  let emaSeries = [];
+  let rsiSeries;
+  let sentimentState = {};
 
-  let game = null; // will hold our Game instance
+  // DOM elements
+  const addBtn = document.getElementById('add-stock');
+  const searchOverlay = document.getElementById('search-overlay');
+  const searchInput = document.getElementById('search-input');
+  const searchResults = document.getElementById('search-results');
+  const watchlistElement = document.getElementById('watchlist-items');
+  const chartWrapper = document.getElementById('chart-wrapper');
+  const chartContainer = document.getElementById('chart');
+  const fullscreenBtn = document.getElementById('fullscreen-btn');
+  const sentimentBox = document.getElementById('sentiment-box');
+  const sentimentItems = document.getElementById('sentiment-items');
+  const sentimentActions = document.getElementById('sentiment-actions');
+  const marketBuyBtn = document.getElementById('market-buy');
+  const marketSellBtn = document.getElementById('market-sell');
+  const commandInput = document.getElementById('command-input');
 
-  /*
-   * Hide the welcome overlay after 3 seconds.  Fade it out gently
-   * and reveal the main interface.
+  // Embed sample data directly into the script. This avoids fetch() from file://
+  // which is blocked by browsers for security reasons. To hook this up to live
+  // data simply replace this object with an asynchronous fetch call.
+  const sampleData = {
+    "VOO": [
+      { time: "2025-07-01", open: 580.5, high: 582.3, low: 579.5, close: 581.8, volume: 5000000 },
+      { time: "2025-07-02", open: 582.0, high: 584.1, low: 581.0, close: 583.5, volume: 4800000 },
+      { time: "2025-07-03", open: 583.0, high: 585.4, low: 582.5, close: 584.0, volume: 5100000 },
+      { time: "2025-07-05", open: 584.5, high: 586.0, low: 583.0, close: 585.7, volume: 5200000 },
+      { time: "2025-07-06", open: 585.7, high: 587.0, low: 584.0, close: 586.5, volume: 5300000 }
+    ],
+    "GOOGL": [
+      { time: "2025-07-01", open: 2700.5, high: 2720.1, low: 2690.0, close: 2710.0, volume: 1500000 },
+      { time: "2025-07-02", open: 2710.0, high: 2735.0, low: 2700.0, close: 2725.0, volume: 1600000 },
+      { time: "2025-07-03", open: 2725.0, high: 2750.0, low: 2715.0, close: 2745.0, volume: 1550000 },
+      { time: "2025-07-05", open: 2745.0, high: 2760.0, low: 2735.0, close: 2755.0, volume: 1580000 },
+      { time: "2025-07-06", open: 2755.0, high: 2770.0, low: 2740.0, close: 2765.0, volume: 1600000 }
+    ],
+    "TSLA": [
+      { time: "2025-07-01", open: 700.0, high: 710.0, low: 690.0, close: 705.0, volume: 25000000 },
+      { time: "2025-07-02", open: 705.0, high: 715.0, low: 695.0, close: 710.0, volume: 24000000 },
+      { time: "2025-07-03", open: 710.0, high: 720.0, low: 700.0, close: 715.0, volume: 24500000 },
+      { time: "2025-07-05", open: 715.0, high: 725.0, low: 705.0, close: 720.0, volume: 25000000 },
+      { time: "2025-07-06", open: 720.0, high: 730.0, low: 710.0, close: 725.0, volume: 25500000 }
+    ],
+    "NVDA": [
+      { time: "2025-07-01", open: 400.0, high: 405.0, low: 395.0, close: 402.0, volume: 20000000 },
+      { time: "2025-07-02", open: 402.0, high: 410.0, low: 400.0, close: 407.0, volume: 19000000 },
+      { time: "2025-07-03", open: 407.0, high: 415.0, low: 405.0, close: 410.0, volume: 19500000 },
+      { time: "2025-07-05", open: 410.0, high: 417.0, low: 408.0, close: 415.0, volume: 20000000 },
+      { time: "2025-07-06", open: 415.0, high: 420.0, low: 410.0, close: 418.0, volume: 20500000 }
+    ],
+    "AMD": [
+      { time: "2025-07-01", open: 110.0, high: 112.0, low: 108.0, close: 111.0, volume: 30000000 },
+      { time: "2025-07-02", open: 111.0, high: 113.0, low: 109.0, close: 112.0, volume: 29500000 },
+      { time: "2025-07-03", open: 112.0, high: 114.0, low: 110.0, close: 113.0, volume: 29800000 },
+      { time: "2025-07-05", open: 113.0, high: 115.0, low: 111.0, close: 114.0, volume: 30200000 },
+      { time: "2025-07-06", open: 114.0, high: 116.0, low: 112.0, close: 115.0, volume: 30500000 }
+    ]
+  };
+
+  // Initialise state with sample data
+  allData = sampleData;
+  watchlist = ['VOO'];
+  activeSymbol = 'VOO';
+  // Build chart and UI
+  buildChart();
+  renderWatchlist();
+  evaluateSentiment();
+
+  /**
+   * Build a new chart instance and populate with current active symbol's data.
    */
-  setTimeout(() => {
-    welcomeOverlay.style.opacity = '0';
-    setTimeout(() => {
-      welcomeOverlay.classList.add('hidden');
-      main.classList.remove('hidden');
-    }, 500);
-  }, 3000);
-
-  /*
-   * Respond to the user clicking the "Get My Habits" button.  It
-   * collects the entered name, generates a poem and a list of daily
-   * habits, and displays them to the user.
-   */
-  startButton.addEventListener('click', () => {
-    const name = nameInput.value.trim();
-    if (!name) {
-      alert('Please enter your name to continue.');
-      return;
+  function buildChart() {
+    // Clear existing chart if present
+    if (chart) {
+      chart.remove();
     }
-    // Generate poem and tasks, then render
-    const poem = generatePoem(name);
-    const tasks = generateTasks();
-    // Convert newline characters into <br> elements for HTML display
-    const htmlPoem = poem.replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
-    poemContainer.innerHTML = htmlPoem;
-    // Clear existing tasks
-    tasksList.innerHTML = '';
-    tasks.forEach(task => {
-      const li = document.createElement('li');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      li.appendChild(checkbox);
-      const span = document.createElement('span');
-      span.textContent = task;
-      li.appendChild(span);
-      // Mark tasks as completed when checkbox is checked
-      checkbox.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          li.classList.add('completed');
-        } else {
-          li.classList.remove('completed');
-        }
-      });
-      tasksList.appendChild(li);
+    chart = LightweightCharts.createChart(chartContainer, {
+      layout: {
+        background: { color: '#0d1117' },
+        textColor: '#c9d1d9',
+      },
+      grid: {
+        vertLines: { color: '#21262d' },
+        horzLines: { color: '#21262d' },
+      },
+      timeScale: {
+        borderColor: '#30363d',
+      },
+      rightPriceScale: {
+        borderColor: '#30363d',
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+      },
+      height: chartContainer.clientHeight,
     });
-    resultSection.classList.remove('hidden');
-  });
-
-  /**
-   * Generate a short four‑line poem based on the user's name.  The
-   * poem uses gentle, positive language and always ends with the
-   * person's name to personalise it.  A small collection of
-   * templates keeps things varied and fresh.
-   *
-   * @param {string} name The user's entered name
-   * @returns {string} A poem incorporating the name
-   */
-  function generatePoem(name) {
-    const capitalName = name.charAt(0).toUpperCase() + name.slice(1);
-    const templates = [
-      `A gentle breeze blows through the trees,\nBringing with it whispers on the breeze.\nWithin that song a melody proclaims,\nThe world is brighter when you’re here, ${capitalName}.`,
-      `Your name paints colours in the sky,\nSoft hues that lift our spirits high.\nKindness in your heart you proudly claim,\nWe celebrate you and your name, ${capitalName}.`,
-      `Like sunshine breaking through the morning haze,\nYour presence warms and lights our days.\nThe world sings softly, always the same,\nThere’s joy within the sound of ${capitalName}.`,
-      `An echo carried on a quiet stream,\nA tender promise and a tranquil dream.\nPeace is written in each letter’s frame,\nSuch comfort lies inside your name, ${capitalName}.`
-    ];
-    // pick a random template
-    return templates[Math.floor(Math.random() * templates.length)];
+    candleSeries = chart.addCandlestickSeries({
+      upColor: '#26a269',
+      downColor: '#a03535',
+      wickUpColor: '#26a269',
+      wickDownColor: '#a03535',
+      borderVisible: false,
+    });
+    // Load initial data
+    loadSymbolData(activeSymbol);
+    // Click on chart for manual support/resistance lines
+    chart.subscribeClick((param) => {
+      if (!param.time || !param.point) return;
+      const price = candleSeries.coordinateToPrice(param.point.y);
+      drawSupportResistance(price);
+    });
   }
 
   /**
-   * Generate a list of four daily habits.  At least one habit is
-   * intentionally light‑hearted to inject some humour into the day.
-   * Content remains wholesome and safe for all audiences.
-   *
-   * @returns {string[]} An array of task descriptions
+   * Load candlestick data for a given symbol and update the chart.
+   * Also resets any existing overlays (EMA/RSI).
+   * @param {string} symbol
    */
-  function generateTasks() {
-    const habitPool = [
-      'Drink a glass of water first thing in the morning',
-      'Spend 10 minutes meditating or breathing deeply',
-      'Take a short walk outside to enjoy fresh air',
-      'Write down three things you’re grateful for today',
-      'Read a chapter from a book you enjoy',
-      'Tidy up your workspace for five minutes',
-      'Reach out to a friend or family member',
-      'Stretch or do some light exercise for 15 minutes'
-    ];
-    const funnyPool = [
-      'Do a silly dance to your favourite song',
-      'Speak like a pirate for two minutes',
-      'Attempt to juggle with soft items (be careful!)',
-      'Try to balance a book on your head while walking',
-      'Make the silliest face you can in the mirror'
-    ];
-    // pick three unique habits from the habit pool
-    const selectedHabits = [];
-    while (selectedHabits.length < 3) {
-      const index = Math.floor(Math.random() * habitPool.length);
-      const habit = habitPool[index];
-      if (!selectedHabits.includes(habit)) {
-        selectedHabits.push(habit);
-      }
+  function loadSymbolData(symbol) {
+    const bars = (allData[symbol] || []).map((item) => ({
+      time: item.time,
+      open: item.open,
+      high: item.high,
+      low: item.low,
+      close: item.close,
+    }));
+    candleSeries.setData(bars);
+    // Remove previous series for EMAs and RSI
+    emaSeries.forEach((series) => chart.removeSeries(series));
+    emaSeries = [];
+    if (rsiSeries) {
+      chart.removeSeries(rsiSeries);
+      rsiSeries = null;
     }
-    // pick one random funny habit
-    const funnyHabit = funnyPool[Math.floor(Math.random() * funnyPool.length)];
-    // combine and shuffle
-    const allTasks = [...selectedHabits, funnyHabit];
-    return shuffleArray(allTasks);
   }
 
   /**
-   * Shuffle an array in place using the Fisher–Yates algorithm.
-   *
-   * @param {any[]} array The array to shuffle
-   * @returns {any[]} The shuffled array
+   * Render the current watchlist below the chart and wire click handlers.
    */
-  function shuffleArray(array) {
-    for (let i = array.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [array[i], array[j]] = [array[j], array[i]];
-    }
-    return array;
-  }
-
-  /*
-   * Rope dragging behaviour.  When the user drags the rope handle
-   * upward beyond a threshold, the projector screen reveals itself and
-   * the game starts.  This also prevents accidental triggers by
-   * requiring a minimum drag distance.
-   */
-  let isDragging = false;
-  let startY = 0;
-  const dragThreshold = 80; // pixels to drag upwards to open the screen
-
-  // Start dragging
-  projectorHandle.addEventListener('mousedown', (e) => {
-    isDragging = true;
-    startY = e.clientY;
-  });
-  projectorHandle.addEventListener('touchstart', (e) => {
-    isDragging = true;
-    startY = e.touches[0].clientY;
-  });
-
-  // Track movement
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const dy = startY - e.clientY;
-    if (dy > dragThreshold) {
-      openProjector();
-      isDragging = false;
-    }
-  });
-  document.addEventListener('touchmove', (e) => {
-    if (!isDragging) return;
-    const dy = startY - e.touches[0].clientY;
-    if (dy > dragThreshold) {
-      openProjector();
-      isDragging = false;
-    }
-  });
-  // End dragging
-  document.addEventListener('mouseup', () => {
-    isDragging = false;
-  });
-  document.addEventListener('touchend', () => {
-    isDragging = false;
-  });
-
-  // Allow users to simply click the rope handle to open the game.  This
-  // serves as a fallback in case drag gestures aren’t recognised.
-  projectorHandle.addEventListener('click', () => {
-    openProjector();
-  });
-
-
-  /**
-   * Open the projector screen.  This slides up the game area, hides
-   * the rope handle and starts the game logic.
-   */
-  function openProjector() {
-    // Reveal the projector screen by removing its hidden state and expanding it
-    projectorScreen.classList.remove('hidden');
-    projectorScreen.classList.add('active');
-    // Hide the rope handle so it doesn’t interfere while the game is open
-    projectorHandle.classList.add('hidden');
-    // Delay the start of the game slightly to allow CSS animation to finish
-    setTimeout(() => {
-      startGame();
-    }, 300);
-  }
-
-  /**
-   * Close the projector screen and stop the game.  Re‑show the rope
-   * handle so the user can play again later.
-   */
-  function closeProjector() {
-    // Collapse the projector screen
-    projectorScreen.classList.remove('active');
-    // Wait for the collapse animation to finish before hiding completely
-    setTimeout(() => {
-      projectorScreen.classList.add('hidden');
-    }, 400);
-    // Show the rope handle again
-    projectorHandle.classList.remove('hidden');
-    // Stop the game if running
-    if (game) {
-      game.destroy();
-      game = null;
-    }
-  }
-
-  // Close game event
-  closeGameBtn.addEventListener('click', () => {
-    closeProjector();
-  });
-
-  /**
-   * Initialize and start the catch‑the‑habits game.  Sets up the
-   * canvas size, attaches event listeners and starts the animation loop.
-   */
-  function startGame() {
-    // Adjust canvas dimensions to match its displayed size
-    gameCanvas.width = gameCanvas.clientWidth;
-    gameCanvas.height = gameCanvas.clientHeight;
-    scoreDisplay.textContent = 'Score: 0';
-    game = new CatchGame(gameCanvas, scoreDisplay);
-  }
-
-  /**
-   * Simple catch game constructor.  Items fall from the top and the
-   * player moves a paddle left and right to catch them.  Catching
-   * items increases the score.
-   * @param {HTMLCanvasElement} canvas The canvas on which to draw
-   * @param {HTMLElement} scoreLabel The element displaying the score
-   */
-  class CatchGame {
-    constructor(canvas, scoreLabel) {
-      this.canvas = canvas;
-      this.ctx = canvas.getContext('2d');
-      this.scoreLabel = scoreLabel;
-      this.width = canvas.width;
-      this.height = canvas.height;
-      this.player = { x: this.width / 2 - 40, width: 80, height: 15, speed: 6, moveLeft: false, moveRight: false };
-      this.items = [];
-      this.score = 0;
-      this.running = true;
-      // spawn items every second
-      this.spawnInterval = setInterval(() => {
-        this.spawnItem();
-      }, 1000);
-      // Bind methods for event listeners
-      this.onKeyDown = this.onKeyDown.bind(this);
-      this.onKeyUp = this.onKeyUp.bind(this);
-      // Listen for keyboard input
-      document.addEventListener('keydown', this.onKeyDown);
-      document.addEventListener('keyup', this.onKeyUp);
-      // Start the animation loop
-      this.update = this.update.bind(this);
-      requestAnimationFrame(this.update);
-    }
-    onKeyDown(e) {
-      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-        this.player.moveLeft = true;
+  function renderWatchlist() {
+    watchlistElement.innerHTML = '';
+    watchlist.forEach((symbol) => {
+      const li = document.createElement('li');
+      li.textContent = symbol;
+      li.dataset.symbol = symbol;
+      if (symbol === activeSymbol) {
+        li.classList.add('active');
       }
-      if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-        this.player.moveRight = true;
-      }
-    }
-    onKeyUp(e) {
-      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-        this.player.moveLeft = false;
-      }
-      if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-        this.player.moveRight = false;
-      }
-    }
-    spawnItem() {
-      const radius = 12 + Math.random() * 6;
-      const x = radius + Math.random() * (this.width - 2 * radius);
-      const speed = 2 + Math.random() * 2;
-      this.items.push({ x, y: -radius, r: radius, vy: speed });
-    }
-    update() {
-      if (!this.running) return;
-      const ctx = this.ctx;
-      ctx.clearRect(0, 0, this.width, this.height);
-      // Move player
-      if (this.player.moveLeft) {
-        this.player.x -= this.player.speed;
-      }
-      if (this.player.moveRight) {
-        this.player.x += this.player.speed;
-      }
-      // Keep player within bounds
-      if (this.player.x < 0) this.player.x = 0;
-      if (this.player.x + this.player.width > this.width) this.player.x = this.width - this.player.width;
-      // Update items
-      for (let i = this.items.length - 1; i >= 0; i--) {
-        const item = this.items[i];
-        item.y += item.vy;
-        // Check collision with player
-        const hitY = this.height - this.player.height;
-        if (item.y + item.r >= hitY) {
-          // Check horizontal overlap
-          if (item.x + item.r >= this.player.x && item.x - item.r <= this.player.x + this.player.width) {
-            // Caught the item
-            this.items.splice(i, 1);
-            this.score += 10;
-            this.scoreLabel.textContent = `Score: ${this.score}`;
-            continue;
-          }
-        }
-        // Remove items that fall off screen
-        if (item.y - item.r > this.height) {
-          this.items.splice(i, 1);
-        }
-      }
-      // Draw items
-      this.items.forEach(item => {
-        ctx.beginPath();
-        ctx.arc(item.x, item.y, item.r, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 122, 255, 0.8)';
-        ctx.fill();
+      li.addEventListener('click', () => {
+        activeSymbol = symbol;
+        renderWatchlist();
+        loadSymbolData(symbol);
       });
-      // Draw player paddle
-      ctx.fillStyle = '#34c759';
-      ctx.fillRect(this.player.x, this.height - this.player.height, this.player.width, this.player.height);
-      requestAnimationFrame(this.update);
+      watchlistElement.appendChild(li);
+    });
+  }
+
+  /**
+   * When user clicks the + button show the search overlay.
+   */
+  addBtn.addEventListener('click', () => {
+    searchOverlay.classList.remove('hidden');
+    searchInput.value = '';
+    populateSearchResults('');
+    searchInput.focus();
+  });
+
+  /**
+   * Populate the search results based on a query.
+   * For now we search only within keys of allData. In a production app
+   * you would fetch from a remote service.
+   * @param {string} query
+   */
+  function populateSearchResults(query) {
+    searchResults.innerHTML = '';
+    const lower = query.toLowerCase();
+    const candidates = Object.keys(allData).filter(
+      (sym) => sym.toLowerCase().includes(lower) || lower === ''
+    );
+    candidates.forEach((sym) => {
+      // Skip if already in watchlist
+      if (watchlist.includes(sym)) return;
+      const li = document.createElement('li');
+      li.textContent = sym;
+      li.addEventListener('click', () => {
+        watchlist.push(sym);
+        renderWatchlist();
+        evaluateSentiment();
+        searchOverlay.classList.add('hidden');
+      });
+      searchResults.appendChild(li);
+    });
+  }
+
+  searchInput.addEventListener('input', (e) => {
+    populateSearchResults(e.target.value.trim());
+  });
+
+  // Hide search overlay on outside click or escape
+  searchOverlay.addEventListener('click', (e) => {
+    if (e.target === searchOverlay) {
+      searchOverlay.classList.add('hidden');
     }
-    destroy() {
-      this.running = false;
-      clearInterval(this.spawnInterval);
-      document.removeEventListener('keydown', this.onKeyDown);
-      document.removeEventListener('keyup', this.onKeyUp);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !searchOverlay.classList.contains('hidden')) {
+      searchOverlay.classList.add('hidden');
+    }
+  });
+
+  /**
+   * Fullscreen toggle. Adds/removes a CSS class on body to adjust layout
+   * and shows the sentiment box.
+   */
+  fullscreenBtn.addEventListener('click', () => {
+    document.body.classList.toggle('fullscreen');
+    // When entering fullscreen, show sentiment box
+    if (document.body.classList.contains('fullscreen')) {
+      sentimentBox.classList.remove('hidden');
+    } else {
+      sentimentBox.classList.add('hidden');
+    }
+    // Resize chart to fill space
+    if (chart) {
+      chart.applyOptions({
+        height: chartContainer.clientHeight,
+      });
+    }
+  });
+
+  /**
+   * Draw horizontal support or resistance line at given price. We treat these
+   * lines as simple horizontal rays that extend infinitely across the chart.
+   * @param {number} price
+   */
+  function drawSupportResistance(price) {
+    const lineSeries = chart.addLineSeries({
+      color: '#8b949e',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dotted,
+    });
+    // Create line data with two points at far left and right times
+    const candles = allData[activeSymbol] || [];
+    const firstTime = candles[0]?.time;
+    const lastTime = candles[candles.length - 1]?.time;
+    if (!firstTime || !lastTime) return;
+    const lineData = [
+      { time: firstTime, value: price },
+      { time: lastTime, value: price },
+    ];
+    lineSeries.setData(lineData);
+  }
+
+  /**
+   * Simple exponential moving average calculation.
+   * @param {Array} values Array of closing prices
+   * @param {number} length Period length for EMA
+   * @returns {Array} Array of EMA values aligned to input
+   */
+  function calculateEMA(values, length) {
+    const ema = [];
+    let multiplier = 2 / (length + 1);
+    let prevEma = values[0];
+    ema.push(prevEma);
+    for (let i = 1; i < values.length; i++) {
+      const current = values[i] * multiplier + prevEma * (1 - multiplier);
+      ema.push(current);
+      prevEma = current;
+    }
+    return ema;
+  }
+
+  /**
+   * Calculate RSI (Relative Strength Index) using the classic 14-period formula.
+   * Returns an array of RSI values aligned to input.
+   * @param {Array} closes Array of closing prices
+   * @param {number} period Period length
+   * @returns {Array}
+   */
+  function calculateRSI(closes, period = 14) {
+    const rsi = [];
+    let gains = 0;
+    let losses = 0;
+    // Seed initial average gain/loss
+    for (let i = 1; i <= period; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff >= 0) gains += diff;
+      else losses -= diff;
+    }
+    gains /= period;
+    losses /= period;
+    rsi[period] = losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
+    for (let i = period + 1; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      let up = 0,
+        down = 0;
+      if (diff >= 0) up = diff;
+      else down = -diff;
+      gains = (gains * (period - 1) + up) / period;
+      losses = (losses * (period - 1) + down) / period;
+      const rs = losses === 0 ? 0 : gains / losses;
+      rsi[i] = losses === 0 ? 100 : 100 - 100 / (1 + rs);
+    }
+    return rsi;
+  }
+
+  /**
+   * Add EMA lines to the chart for given periods (9 and 21). Called in
+   * response to command input.
+   */
+  function addEMAs() {
+    const candles = allData[activeSymbol] || [];
+    const closes = candles.map((c) => c.close);
+    const ema9 = calculateEMA(closes, 9);
+    const ema21 = calculateEMA(closes, 21);
+    // Trim start to align with data length
+    const ema9Data = candles.map((c, i) => ({ time: c.time, value: ema9[i] }));
+    const ema21Data = candles.map((c, i) => ({ time: c.time, value: ema21[i] }));
+    const series9 = chart.addLineSeries({ color: '#f0c674', lineWidth: 1 });
+    series9.setData(ema9Data);
+    const series21 = chart.addLineSeries({ color: '#b392ac', lineWidth: 1 });
+    series21.setData(ema21Data);
+    emaSeries.push(series9, series21);
+  }
+
+  /**
+   * Plot RSI as a separate line series on a second price scale. The series
+   * shares the same time axis as the main chart but uses its own scale.
+   */
+  function addRSI() {
+    const candles = allData[activeSymbol] || [];
+    const closes = candles.map((c) => c.close);
+    const rsi = calculateRSI(closes, 14);
+    const data = candles.map((c, i) => ({ time: c.time, value: rsi[i] || null }));
+    rsiSeries = chart.addLineSeries({
+      color: '#539bf5',
+      lineWidth: 1,
+      pane: 0,
+      priceScaleId: 'rsi',
+    });
+    // Create separate price scale for RSI (0-100)
+    chart.priceScale('rsi', {
+      position: 'left',
+      scaleMargins: { top: 0.8, bottom: 0.0 },
+      borderColor: '#30363d',
+    });
+    rsiSeries.setData(data);
+  }
+
+  /**
+   * Parse command input and perform actions accordingly. Supported
+   * commands: 'show me rsi', 'plot the 9 and 21 ema', 'draw major and minor support and resistance'.
+   */
+  commandInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const cmd = commandInput.value.trim().toLowerCase();
+      commandInput.value = '';
+      if (cmd.includes('rsi')) {
+        addRSI();
+      }
+      if (cmd.includes('ema')) {
+        addEMAs();
+      }
+      if (cmd.includes('support') || cmd.includes('resistance')) {
+        // Draw simple support/resistance at most recent high/low
+        const candles = allData[activeSymbol] || [];
+        const highs = candles.map((c) => c.high);
+        const lows = candles.map((c) => c.low);
+        // major support/resistance using max/min
+        const maxHigh = Math.max(...highs);
+        const minLow = Math.min(...lows);
+        drawSupportResistance(maxHigh);
+        drawSupportResistance(minLow);
+        // minor levels using average
+        const avgHigh = highs.reduce((a, b) => a + b, 0) / highs.length;
+        const avgLow = lows.reduce((a, b) => a + b, 0) / lows.length;
+        drawSupportResistance(avgHigh);
+        drawSupportResistance(avgLow);
+      }
+      // Additional commands can be added here
+    }
+  });
+
+  /**
+   * Evaluate sentiment for each ticker in the watchlist using simplified logic.
+   * For demonstration, we apply the rules described in the specification.
+   * Signals are determined based on RSI, EMA and VWAP positions. This is a
+   * vastly simplified approximation suitable for sample data.
+   */
+  function evaluateSentiment() {
+    sentimentState = {};
+    watchlist.forEach((symbol) => {
+      const data = allData[symbol] || [];
+      if (data.length < 2) {
+        sentimentState[symbol] = 'hold';
+        return;
+      }
+      // Get closing prices and volumes
+      const closes = data.map((d) => d.close);
+      const volumes = data.map((d) => d.volume);
+      // Compute RSI
+      const rsi = calculateRSI(closes, 14);
+      const currentRSI = rsi[rsi.length - 1] || 50;
+      // Compute EMA and price vs EMA
+      const ema9 = calculateEMA(closes, 9);
+      const ema21 = calculateEMA(closes, 21);
+      const currentPrice = closes[closes.length - 1];
+      const currentEMA9 = ema9[ema9.length - 1];
+      const currentEMA21 = ema21[ema21.length - 1];
+      // Compute VWAP (simple average of price weighted by volume)
+      const typicalPrices = data.map((d) => (d.high + d.low + d.close) / 3);
+      const numerator = typicalPrices.reduce((sum, tp, i) => sum + tp * volumes[i], 0);
+      const denominator = volumes.reduce((a, b) => a + b, 0);
+      const vwap = denominator !== 0 ? numerator / denominator : currentPrice;
+      // Determine signal based on simplified rules
+      let signal = 'hold';
+      // BUY: price above both EMAs and RSI between 50 and 65
+      if (currentPrice > currentEMA9 && currentPrice > currentEMA21 && currentRSI > 50 && currentRSI <= 65 && currentPrice > vwap) {
+        signal = 'buy';
+      }
+      // SELL: price below EMAs and RSI < 50
+      else if (currentPrice < currentEMA9 && currentPrice < currentEMA21 && currentRSI < 50 && currentPrice < vwap) {
+        signal = 'sell';
+      }
+      // otherwise hold
+      sentimentState[symbol] = signal;
+    });
+    renderSentimentBox();
+  }
+
+  /**
+   * Update the sentiment box UI based on sentimentState. Shows buy/sell
+   * actions when conditions across watchlist meet triggers defined in spec.
+   */
+  function renderSentimentBox() {
+    // Clear items
+    sentimentItems.innerHTML = '';
+    let buyCount = 0;
+    let sellCount = 0;
+    const vooSignal = sentimentState['VOO'];
+    // Build list items
+    Object.entries(sentimentState).forEach(([symbol, signal]) => {
+      const li = document.createElement('li');
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = symbol;
+      const statusSpan = document.createElement('span');
+      statusSpan.classList.add('status');
+      if (signal === 'buy') {
+        statusSpan.classList.add('buy');
+        statusSpan.textContent = '✅';
+        buyCount++;
+      } else if (signal === 'sell') {
+        statusSpan.classList.add('sell');
+        statusSpan.textContent = '🔻';
+        sellCount++;
+      } else {
+        statusSpan.classList.add('hold');
+        statusSpan.textContent = '⏸️';
+      }
+      li.appendChild(nameSpan);
+      li.appendChild(statusSpan);
+      sentimentItems.appendChild(li);
+    });
+    // Determine aggregate actions
+    let showBuy = false;
+    let showSell = false;
+    // BUY: at least 3 tickers have a BUY signal
+    if (buyCount >= 3) {
+      showBuy = true;
+    }
+    // SELL: VOO must be sell and at least 2 others must be sell
+    if (vooSignal === 'sell' && sellCount >= 3) {
+      showSell = true;
+    }
+    // Update action buttons
+    if (showBuy) {
+      marketBuyBtn.classList.remove('hidden');
+      marketBuyBtn.classList.add('buy');
+    } else {
+      marketBuyBtn.classList.add('hidden');
+      marketBuyBtn.classList.remove('buy');
+    }
+    if (showSell) {
+      marketSellBtn.classList.remove('hidden');
+      marketSellBtn.classList.add('sell');
+    } else {
+      marketSellBtn.classList.add('hidden');
+      marketSellBtn.classList.remove('sell');
+    }
+    // Show sentiment actions section if either buy or sell triggered
+    if (showBuy || showSell) {
+      sentimentActions.classList.remove('hidden');
+    } else {
+      sentimentActions.classList.add('hidden');
     }
   }
-});
+
+  // Re-evaluate sentiment periodically (e.g., every 30 seconds). In a
+  // production app this would be triggered by live data updates.
+  setInterval(evaluateSentiment, 30000);
+})();
